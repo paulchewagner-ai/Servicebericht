@@ -4,16 +4,16 @@ import Speech
 enum SpeechRecognizerError: LocalizedError {
     case recognizerUnavailable
     case audioInputUnavailable
-    case recognitionFailed
+    case recognitionFailed(details: String)
 
     var errorDescription: String? {
         switch self {
         case .recognizerUnavailable:
-            "Die deutsche Spracherkennung ist gerade nicht verfügbar. Prüf bitte, ob Diktieren auf dem iPad eingeschaltet ist."
+            "Die deutsche Spracherkennung ist gerade nicht verfügbar. Prüf bitte, ob Diktieren auf dem iPad eingeschaltet ist (Einstellungen › Allgemein › Tastatur › Diktierfunktion)."
         case .audioInputUnavailable:
-            "Es wurde kein Mikrofon gefunden."
-        case .recognitionFailed:
-            "Die Spracherkennung ist mehrfach fehlgeschlagen."
+            "Es wurde kein Mikrofon gefunden. Im Simulator: Mac-Systemeinstellungen › Datenschutz & Sicherheit › Mikrofon › Simulator erlauben."
+        case .recognitionFailed(let details):
+            "Die Spracherkennung ist mehrfach fehlgeschlagen (\(details))."
         }
     }
 }
@@ -44,6 +44,8 @@ private final class RequestBox: @unchecked Sendable {
 final class SpeechRecognizer {
     /// Wird bei jeder Änderung des erkannten Textes aufgerufen (Live-Anzeige).
     var onTranscriptChange: ((String) -> Void)?
+    /// Nur Debug-Build: Wird aufgerufen, wenn auf getippte Eingabe umgeschaltet wird.
+    var onTypingFallback: ((String) -> Void)?
 
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "de-DE"))
     private let audioEngine = AVAudioEngine()
@@ -57,6 +59,11 @@ final class SpeechRecognizer {
     private var partialText = ""
     private var silenceTimeout: Duration = .seconds(3)
     private var consecutiveFailures = 0
+    private var lastErrorDescription = ""
+    /// Erst auf dem Gerät erkennen; schlägt das fehl, auf Apples Server ausweichen (braucht Netz).
+    private var preferOnDevice = true
+    /// Nur Debug-Build: Erkennung nicht nutzbar, Antworten werden getippt.
+    private(set) var isTypingFallback = false
     /// Zähler, um Rückmeldungen alter Erkennungsaufgaben zu ignorieren.
     private var generation = 0
 
@@ -79,27 +86,32 @@ final class SpeechRecognizer {
                 silenceTimeout: Duration,
                 maxDuration: Duration) async throws -> String {
         if continuation != nil { cancel() }
+        if isTypingFallback {
+            return try await waitForTypedInput()
+        }
         guard let recognizer, recognizer.isAvailable else {
-            throw SpeechRecognizerError.recognizerUnavailable
+            return try await fallbackOrThrow(SpeechRecognizerError.recognizerUnavailable)
         }
         self.silenceTimeout = silenceTimeout
         committedText = ""
         partialText = ""
         consecutiveFailures = 0
 
+        do {
+            try startAudioEngine()
+        } catch {
+            stopAudio()
+            return try await fallbackOrThrow(error)
+        }
+
         return try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
-            do {
-                try startAudioEngine()
-                startRecognitionTask(with: recognizer)
-                scheduleTimeout(initialTimeout)
-                maxDurationTask = Task { [weak self] in
-                    try? await Task.sleep(for: maxDuration)
-                    guard let self, !Task.isCancelled else { return }
-                    self.finish(with: .success(self.fullText))
-                }
-            } catch {
-                finish(with: .failure(error))
+            startRecognitionTask(with: recognizer)
+            scheduleTimeout(initialTimeout)
+            maxDurationTask = Task { [weak self] in
+                try? await Task.sleep(for: maxDuration)
+                guard let self, !Task.isCancelled else { return }
+                self.finish(with: .success(self.fullText))
             }
         }
     }
@@ -114,6 +126,14 @@ final class SpeechRecognizer {
         finish(with: .success(text))
     }
 
+    /// Nur Debug-Build: ab sofort nur getippte Eingaben verwenden.
+    func enableTypingFallback(reason: String) {
+        #if DEBUG
+        isTypingFallback = true
+        onTypingFallback?(reason)
+        #endif
+    }
+
     // MARK: - Intern
 
     private var fullText: String {
@@ -121,6 +141,22 @@ final class SpeechRecognizer {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func waitForTypedInput() async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    /// Im Debug-Build auf getippte Eingabe umschalten, im Release-Build den Fehler melden.
+    private func fallbackOrThrow(_ error: Error) async throws -> String {
+        #if DEBUG
+        enableTypingFallback(reason: Self.describe(error))
+        return try await waitForTypedInput()
+        #else
+        throw error
+        #endif
     }
 
     private func startAudioEngine() throws {
@@ -144,20 +180,19 @@ final class SpeechRecognizer {
         request.addsPunctuation = true
         request.taskHint = .dictation
         // Bevorzugt auf dem Gerät erkennen – funktioniert dann auch ohne Netz.
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        request.requiresOnDeviceRecognition = preferOnDevice && recognizer.supportsOnDeviceRecognition
         self.request = request
         requestBox.set(request)
 
-        task = Self.makeTask(recognizer: recognizer, request: request) { [weak self] text, isFinal, failed in
+        task = Self.makeTask(recognizer: recognizer, request: request) { [weak self] text, isFinal, errorText in
             Task { @MainActor in
-                self?.handle(text: text, isFinal: isFinal, failed: failed, generation: currentGeneration)
+                self?.handle(text: text, isFinal: isFinal, errorText: errorText,
+                             generation: currentGeneration)
             }
         }
     }
 
-    private func handle(text: String?, isFinal: Bool, failed: Bool, generation resultGeneration: Int) {
+    private func handle(text: String?, isFinal: Bool, errorText: String?, generation resultGeneration: Int) {
         guard resultGeneration == generation, continuation != nil else { return }
 
         if let text {
@@ -168,6 +203,7 @@ final class SpeechRecognizer {
             }
         }
 
+        let failed = errorText != nil
         guard isFinal || failed else { return }
 
         // Ein Erkennungsabschnitt ist zu Ende (z. B. Zeitlimit). Text sichern und weiterhören.
@@ -175,15 +211,36 @@ final class SpeechRecognizer {
             committedText = fullText
             partialText = ""
         }
-        consecutiveFailures = failed ? consecutiveFailures + 1 : 0
-        if consecutiveFailures >= 3 {
-            if fullText.isEmpty {
-                finish(with: .failure(SpeechRecognizerError.recognitionFailed))
-            } else {
-                finish(with: .success(fullText))
+
+        if let errorText {
+            lastErrorDescription = errorText
+            consecutiveFailures += 1
+            // Erkennung auf dem Gerät klappt nicht (z. B. Sprachpaket fehlt): auf Server ausweichen.
+            if request?.requiresOnDeviceRecognition == true, fullText.isEmpty {
+                preferOnDevice = false
             }
+        } else {
+            consecutiveFailures = 0
+        }
+
+        if consecutiveFailures >= 3 {
+            if !fullText.isEmpty {
+                finish(with: .success(fullText))
+                return
+            }
+            #if DEBUG
+            // Zuhören beenden, aber auf getippte Eingabe warten statt abzubrechen.
+            timeoutTask?.cancel()
+            maxDurationTask?.cancel()
+            generation += 1
+            stopAudio()
+            enableTypingFallback(reason: "Spracherkennung fehlgeschlagen: \(lastErrorDescription)")
+            #else
+            finish(with: .failure(SpeechRecognizerError.recognitionFailed(details: lastErrorDescription)))
+            #endif
             return
         }
+
         task?.cancel()
         request?.endAudio()
         if let recognizer {
@@ -195,7 +252,7 @@ final class SpeechRecognizer {
         timeoutTask?.cancel()
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(for: duration)
-            guard let self, !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled, !self.isTypingFallback else { return }
             self.finish(with: .success(self.fullText))
         }
     }
@@ -224,6 +281,12 @@ final class SpeechRecognizer {
         task = nil
     }
 
+    static func describe(_ error: Error) -> String {
+        let nsError = error as NSError
+        let text = (error as? LocalizedError)?.errorDescription ?? nsError.localizedDescription
+        return "\(text) [\(nsError.domain) \(nsError.code)]"
+    }
+
     // Die folgenden Hilfsfunktionen sind bewusst `nonisolated`: Ihre Closures laufen auf
     // Hintergrund-Threads und dürfen nicht als Main-Actor-Code gelten.
 
@@ -238,12 +301,22 @@ final class SpeechRecognizer {
     nonisolated private static func makeTask(
         recognizer: SFSpeechRecognizer,
         request: SFSpeechAudioBufferRecognitionRequest,
-        onUpdate: @escaping @Sendable (String?, Bool, Bool) -> Void
+        onUpdate: @escaping @Sendable (String?, Bool, String?) -> Void
     ) -> SFSpeechRecognitionTask {
         recognizer.recognitionTask(with: request) { result, error in
+            if let nsError = error as NSError?,
+               nsError.domain == "kAFAssistantErrorDomain", nsError.code == 1110 {
+                // „Keine Sprache erkannt“ ist normal bei Stille – kein Fehler, einfach weiterhören.
+                onUpdate(result?.bestTranscription.formattedString, true, nil)
+                return
+            }
+            let errorText = error.map { error -> String in
+                let nsError = error as NSError
+                return "\(nsError.localizedDescription) [\(nsError.domain) \(nsError.code)]"
+            }
             onUpdate(result?.bestTranscription.formattedString,
                      result?.isFinal ?? false,
-                     error != nil)
+                     errorText)
         }
     }
 }

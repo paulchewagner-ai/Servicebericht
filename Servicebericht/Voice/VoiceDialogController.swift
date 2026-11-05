@@ -53,6 +53,8 @@ final class VoiceDialogController: Identifiable {
     private(set) var spokenText = ""
     /// Live erkannter Text der laufenden Antwort.
     private(set) var liveTranscript = ""
+    /// Nur Debug-Build: Grund, warum Antworten getippt statt gesprochen werden.
+    private(set) var typingFallbackReason: String?
 
     let questions = Questionnaire.questions
     let report: ServiceReport
@@ -89,6 +91,9 @@ final class VoiceDialogController: Identifiable {
         listener.onTranscriptChange = { [weak self] text in
             self?.liveTranscript = text
         }
+        listener.onTypingFallback = { [weak self] reason in
+            self?.typingFallbackReason = reason
+        }
         runTask = Task { [weak self] in
             await self?.run()
         }
@@ -114,15 +119,28 @@ final class VoiceDialogController: Identifiable {
 
     private func run() async {
         activity = .preparing
-        guard await SpeechRecognizer.requestPermissions() else {
+        let permissionsGranted = await SpeechRecognizer.requestPermissions()
+        if !permissionsGranted {
+            #if DEBUG
+            listener.enableTypingFallback(reason: "Mikrofon oder Spracherkennung nicht erlaubt.")
+            #else
             activity = .failed(Failure(
                 message: "Für den Sprachbericht braucht die App Zugriff auf Mikrofon und Spracherkennung. Bitte erlaube beides in den Einstellungen.",
                 offersSettings: true))
             return
+            #endif
         }
 
         do {
-            try AudioSessionController.activateForDialog()
+            do {
+                try AudioSessionController.activateForDialog()
+            } catch {
+                #if DEBUG
+                listener.enableTypingFallback(reason: "Audio-Sitzung: \(SpeechRecognizer.describe(error))")
+                #else
+                throw error
+                #endif
+            }
             await say(introText())
             while true {
                 try await askQuestions()
@@ -138,8 +156,7 @@ final class VoiceDialogController: Identifiable {
             activity = .finished(.cancelled)
         } catch {
             logger.error("Sprachdialog fehlgeschlagen: \(error.localizedDescription, privacy: .public)")
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            activity = .failed(Failure(message: message, offersSettings: false))
+            activity = .failed(Failure(message: SpeechRecognizer.describe(error), offersSettings: false))
         }
 
         UIApplication.shared.isIdleTimerDisabled = false

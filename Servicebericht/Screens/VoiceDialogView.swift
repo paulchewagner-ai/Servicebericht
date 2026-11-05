@@ -136,6 +136,12 @@ struct VoiceDialogView: View {
             }
 
             #if DEBUG
+            if let reason = controller.typingFallbackReason {
+                Label("DEBUG: Sprache nicht nutzbar – bitte Antworten unten eintippen.\n\(reason)",
+                      systemImage: "keyboard")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
             debugInputField
             #endif
         }
