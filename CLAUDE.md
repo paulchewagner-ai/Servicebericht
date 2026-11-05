@@ -102,6 +102,7 @@ Später: Fotos, zentrale Ablage, Unterschrift (derzeit nicht benötigt).
 - KI: Claude in der Cloud. Bericht wird fertiggestellt, wenn Netz verfügbar ist.
 - Bedienung vollständig per Sprache. Keine Fotos und keine Unterschrift in der ersten Version.
 - Fiktives Projekt: Datenschutzvertrag (AVV) mit Anthropic entfällt.
+- Claude-Zugang über Cloudflare Worker als Proxy (bestätigt 05.11.2026); im Debug-Modus Direktzugriff.
 - Xcode-Projekt im Xcode-16-Format (synchronisierte Ordner): neue Dateien im Ordner
   `Servicebericht/` gehören automatisch zum Ziel. Benötigt Xcode 16 oder neuer.
 - Bundle-ID vorläufig `com.example.servicebericht`; Team in Xcode unter „Signing“ wählen.
@@ -112,7 +113,6 @@ Später: Fotos, zentrale Ablage, Unterschrift (derzeit nicht benötigt).
 
 ## Offene Punkte
 - Freigabe der 7 Fragen und der 4 Felder.
-- Proxy-Vorschlag (Cloudflare Worker) bestätigen, oder nur Debug-Direktzugriff für die Demo.
 - Excel: Bibliothek oder eigener schlanker Schreiber (siehe Etappe 6).
 - Ablage des Codes: Name des GitHub-Repositorys (owner/repo) fehlt noch.
 - Offizielle CI-Werte und Logo; Verteilung an Techniker (TestFlight/MDM).
