@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 /// Grundgerüst: Kopfleiste, Akzentlinie, aktueller Bereich und einfahrendes Seitenmenü.
@@ -97,4 +98,5 @@ struct RootView: View {
 
 #Preview {
     RootView()
+        .modelContainer(for: [ServiceReport.self, ReportAnswer.self], inMemory: true)
 }

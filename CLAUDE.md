@@ -2,7 +2,7 @@
 
 > Stand: 05.11.2026 – ersetzt die erste (formularbasierte) Beschreibung vollständig.
 > Fiktives Projekt (Übungs-/Demo-App), keine echten Kundendaten.
-> Aktuell: Etappe 1 umgesetzt, wartet auf Test im Simulator und OK.
+> Aktuell: Etappe 2 umgesetzt, wartet auf Test auf dem Mac / iPad und OK.
 
 ## Ziel
 Eine iPad-App für Servicetechniker, die gewerbliche Spülmaschinen betreuen. Nach dem Einsatz
@@ -72,7 +72,8 @@ Berichtsnummer `SB-JJJJMMTT-XXXX`, Erfassungszeitpunkt, Rohtranskript jeder Antw
 ## Bericht
 - Gespeichert werden: Rohtranskripte (unverändert) und die 4 von Claude ausformulierten Felder.
 - Claude darf nur verwenden, was gesagt wurde – nichts ergänzen oder erfinden.
-- Status je Bericht: Entwurf · wartet auf Netz · fertig · Fehler.
+- Status je Bericht: Entwurf · Wartet auf Ausformulierung · Fertig · Fehler.
+- Erfassungszeitpunkt = Zeitpunkt, an dem der Techniker „speichern“ bestätigt (`savedAt`).
 
 ## PDF (A4 hoch)
 Kopf in Primärfarbe mit Logo-Platzhalter, Titel, Berichtsnummer, Datum, Techniker; danach die
@@ -110,9 +111,23 @@ Später: Fotos, zentrale Ablage, Unterschrift (derzeit nicht benötigt).
 - Menü: Startseite, Vergangene Berichte, Einstellungen (Bedienungsanleitung und Kontakte
   aus der alten Beschreibung entfallen).
 - Techniker-Name wird in den Einstellungen gepflegt; ohne Namen startet kein Bericht.
+- Code liegt auf GitHub: `paulchewagner-ai/Servicebericht`, Zweig `main`.
+- Etappe 2 (Sprachdialog):
+  - Eine Antwort endet nach 3 s Pause; kommt 10 s lang nichts, gilt sie als „nicht verstanden“.
+    Werte zentral in `DialogSettings` (VoiceDialogController.swift).
+  - Sprachbefehle zählen nur, wenn die ganze Äußerung der Befehl ist („zurück“ im Satz ist Antwort).
+  - „Weiter“ behält eine vorhandene Antwort; bei einer zurückgesprungenen Frage liest die App
+    die bisherige Antwort vor.
+  - Nach 2 erfolglosen Wiederholungen wird die Frage übersprungen (als „übersprungen“ markiert).
+  - Entwurf wird nach jeder Antwort gesichert. Es gibt höchstens einen offenen Entwurf; beim
+    Neustart fragt die App „fortsetzen“ oder „verwerfen und neu beginnen“.
+  - Abbrechen (Knopf oder Sprache) behält den Entwurf.
+  - Ohne Rückfragen durch Claude (kommt in Etappe 3): Abschluss-Zusammenfassung nennt nur
+    Anzahl beantworteter und offene Fragen.
+  - Bildschirm bleibt während des Dialogs an.
+  - Debug-Build: Textfeld zum Tippen von Antworten (für den Simulator), im Release nicht enthalten.
+  - Knöpfe „Wiederholen / Zurück / Weiter / Abbrechen“ als Rückfallebene zur Sprache.
 
 ## Offene Punkte
-- Freigabe der 7 Fragen und der 4 Felder.
 - Excel: Bibliothek oder eigener schlanker Schreiber (siehe Etappe 6).
-- Ablage des Codes: Name des GitHub-Repositorys (owner/repo) fehlt noch.
 - Offizielle CI-Werte und Logo; Verteilung an Techniker (TestFlight/MDM).
